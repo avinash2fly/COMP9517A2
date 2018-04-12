@@ -15,6 +15,9 @@ surf.setExtended(True)
 surf.setNOctaves(4)
 surf.setNOctaveLayers(2)
 
+
+
+
 class MyImage:
     def __init__(self, img_name):
         self.img = None
@@ -23,6 +26,8 @@ class MyImage:
     def __str__(self):
         return self.__name
 
+def resize(img,ratio=0.1):
+    return cv2.resize(img,(0,0),fx=ratio,fy=ratio)
 
 def checkdir(output_path):
     if not os.path.exists(output_path):
@@ -290,17 +295,124 @@ def save_step_3(img_pairs, output_path="./output/step3"):
         cv2.imwrite(output_path+'/'+img[0],img[1])
         cv2.imwrite(output_path+'/'+img[2], img[3])
 
+def match(a,b,direction):
+    imageSet1 = getSURFFeatures(a)
+    imageSet2 = getSURFFeatures(b)
+    matches = getMatches(imageSet1['des'],imageSet2['des'])
+    correspondenceList = []
+    for match in matches:
+        (x1, y1) = imageSet1['kp'][match[0].queryIdx].pt
+        (x2, y2) = imageSet2['kp'][match[0].trainIdx].pt
+        correspondenceList.append([x1, y1, x2, y2])
+    corrs = np.matrix(correspondenceList)
+    H, inliers = ransac(corrs, 0.6)
+    return H
+
+# def stitch(imgs):
+#
+# 	prepare_lists()
+
+def prepare_lists(images):
+    count = len(images)
+    centerIdx = count//2
+    left_list, right_list, center_im = [], [], None
+    center_im = images[centerIdx]
+    for i in range(count):
+        if(i<=centerIdx):
+            left_list.append(images[i])
+        else:
+            right_list.append(images[i])
+    return left_list,right_list
+
+
+def leftshift(left_list):
+    # self.left_list = reversed(self.left_list)
+    a = left_list[0].img
+    for imgTemp in left_list[1:]:
+        b = imgTemp.img
+        H = match(a, b, 'left')
+        xh = np.linalg.inv(H)
+        ds = np.dot(xh, np.array([a.shape[1], a.shape[0], 1]));
+        ds = ds / ds[-1]
+        f1 = np.dot(xh, np.array([0, 0, 1]))
+        f1 = f1 / f1[-1]
+        xh[0][-1] += abs(f1[0])
+        xh[1][-1] += abs(f1[1])
+        ds = np.dot(xh, np.array([a.shape[1], a.shape[0], 1]))
+        offsety = abs(int(f1[1]))
+        offsetx = abs(int(f1[0]))
+        dsize = (int(ds[0]) + offsetx, int(ds[1]) + offsety)
+        tmp = wrapImage(a, xh, dsize)
+        tmp = mix_and_match(tmp, b)
+        # tmp[offsety:b.shape[0] + offsety, offsetx:b.shape[1] + offsetx] = b
+        a = tmp
+
+    leftImage = tmp
+    return leftImage
+
+
+def rightshift(leftImage,right_list):
+    for temp in right_list:
+        each = temp.img
+        H = match(leftImage, each, 'left')
+        txyz = np.dot(H, np.array([each.shape[1], each.shape[0], 1]))
+        txyz = txyz / txyz[-1]
+        dsize = (int(txyz[0]) + leftImage.shape[1], int(txyz[1]) + leftImage.shape[0])
+        tmp = wrapImage(each, H, dsize)
+        tmp = mix_and_match(leftImage, tmp)
+
+    leftImage = tmp
+    return leftImage
+        # self.showImage('left')
+
+def mix_and_match(leftImage, warpedImage):
+		i1y, i1x = leftImage.shape[:2]
+		i2y, i2x = warpedImage.shape[:2]
+		# t = time.time()
+		black_l = np.where(leftImage == np.array([0,0,0]))
+		black_wi = np.where(warpedImage == np.array([0,0,0]))
+
+
+		for i in range(0, i1x):
+			for j in range(0, i1y):
+				try:
+					if(np.array_equal(leftImage[j,i],np.array([0,0,0])) and  np.array_equal(warpedImage[j,i],np.array([0,0,0]))):
+						# print "BLACK"
+						# instead of just putting it with black,
+						# take average of all nearby values and avg it.
+						warpedImage[j,i] = [0, 0, 0]
+					else:
+						if(np.array_equal(warpedImage[j,i],[0,0,0])):
+							# print "PIXEL"
+							warpedImage[j,i] = leftImage[j,i]
+						else:
+							if not np.array_equal(leftImage[j,i], [0,0,0]):
+								bw, gw, rw = warpedImage[j,i]
+								bl,gl,rl = leftImage[j,i]
+								# b = (bl+bw)/2
+								# g = (gl+gw)/2
+								# r = (rl+rw)/2
+								warpedImage[j, i] = [bl,gl,rl]
+				except:
+					pass
+		return warpedImage
 
 def up_to_step_4(imgs):
     """Complete the pipeline and generate a panoramic image"""
     # ... your code here ...
-    return imgs[0]
+    left_shift, right_shift = prepare_lists(imgs)
+    leftImage = leftshift(left_shift)
+    finalImage = rightshift(leftImage,right_shift)
+    return finalImage
 
 
-def save_step_4(imgs, output_path="./output/step4"):
+def save_step_4(img, output_path="./output/step4"):
     """Save the intermediate result from Step 4"""
     # ... your code here ...
-    pass
+    checkdir(output_path)
+    filename = output_path + '/output.jpg'
+    cv2.imwrite(filename, img)
+
 
 
 if __name__ == "__main__":
@@ -329,12 +441,13 @@ if __name__ == "__main__":
     imgs = []
     filelist = os.listdir(args.input)
     filelist.sort()
-    for filename in filelist[:4]:
+    for filename in filelist[:5]:
         # img = cv2.imread(os.path.join(args.input, filename))
         img = MyImage(filename)
-        img.img = cv2.imread(os.path.join(args.input, filename))
-        if img.img is None:
+        temo = cv2.imread(os.path.join(args.input, filename))
+        if temo is None:
             continue
+        img.img = resize(temo, 0.3)
         print(filename)
         imgs.append(img)
 
@@ -353,4 +466,4 @@ if __name__ == "__main__":
     elif args.step == 4:
         print("Running step 4")
         panoramic_img = up_to_step_4(imgs)
-        save_step_4(img_pairs, args.output)
+        save_step_4(panoramic_img, args.output)
