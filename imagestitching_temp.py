@@ -484,14 +484,14 @@ if __name__ == "__main__":
     imgs = []
     filelist = os.listdir(args.input)
     filelist.sort()
-    for filename in filelist:
+    for filename in filelist[:50]:
         # img = cv2.imread(os.path.join(args.input, filename))
         img = MyImage(filename)
         temo = cv2.imread(os.path.join(args.input, filename))
         if temo is None:
             continue
-        img.img = temo
-        # img.img = resize(temo, 0.3)
+        # img.img = temo
+        img.img = resize(temo, 0.3)
         print(filename)
         imgs.append(img)
 
