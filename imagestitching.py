@@ -7,6 +7,7 @@ from numpy import linalg as LA
 import numpy as np
 import sys
 import random
+import math
 
 imgformat=['jpeg']
 surf = cv2.xfeatures2d.SURF_create(400)
@@ -34,9 +35,10 @@ def checkdir(output_path):
         os.makedirs(output_path)
 
 def getSURFFeatures(im):
-		gray = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
+		gray = cv2.GaussianBlur(cv2.cvtColor(im, cv2.COLOR_BGR2GRAY),(5,5), 0)
 		kp, des = surf.detectAndCompute(gray, None)
 		return {'kp':kp, 'des':des}
+
 
 def up_to_step_1(imgs):
     """Complete pipeline up to step 3: Detecting features and descriptors"""
@@ -152,7 +154,10 @@ def geometricDistance(correspondence, h):
 
     p1 = np.transpose(np.matrix([correspondence[0].item(0), correspondence[0].item(1), 1]))
     estimatep2 = np.dot(h, p1)
-    estimatep2 = (1/estimatep2.item(2))*estimatep2
+    try:
+        estimatep2 = (1/estimatep2.item(2))*estimatep2
+    except:
+        pass
 
     p2 = np.transpose(np.matrix([correspondence[0].item(2), correspondence[0].item(3), 1]))
     error = p2 - estimatep2
@@ -192,66 +197,40 @@ def ransac(corr, thresh):
             break
     return np.array(finalH), maxInliers
 
-def wrapImage(self, leftImage, warpedImage):
-		i1y, i1x = leftImage.shape[:2]
-		i2y, i2x = warpedImage.shape[:2]
 
-		black_l = np.where(leftImage == np.array([0,0,0]))
-		black_wi = np.where(warpedImage == np.array([0,0,0]))
+def wrapImage(img, H, shape=None, resize=False):
+    row, col = shape
+    y_cor, x_cor = np.indices((row, col), dtype=np.float32)
+    idx1 = np.array([x_cor.ravel(), y_cor.ravel(), np.ones_like(x_cor).ravel()])
+    idx2 = np.linalg.inv(H).dot(idx1)
 
-		for i in range(0, i1x):
-			for j in range(0, i1y):
-				try:
-					if(np.array_equal(leftImage[j,i],np.array([0,0,0])) and  np.array_equal(warpedImage[j,i],np.array([0,0,0]))):
-						# print "BLACK"
-						# instead of just putting it with black,
-						# take average of all nearby values and avg it.
-						warpedImage[j,i] = [0, 0, 0]
-					else:
-						if(np.array_equal(warpedImage[j,i],[0,0,0])):
-							# print "PIXEL"
-							warpedImage[j,i] = leftImage[j,i]
-						else:
-							if not np.array_equal(leftImage[j,i], [0,0,0]):
-								bw, gw, rw = warpedImage[j,i]
-								bl,gl,rl = leftImage[j,i]
-								# b = (bl+bw)/2
-								# g = (gl+gw)/2
-								# r = (rl+rw)/2
-								warpedImage[j, i] = [bl,gl,rl]
-				except:
-					pass
+    # warp(img1.img, H1, img1.img.shape[:2])
+    if resize:
+        # Calculate the size of the destination image
+        xmin, ymin = np.min(idx2[:-1] / idx2[-1], axis=1)
+        xmax, ymax = np.max(idx2[:-1] / idx2[-1], axis=1)
+        xoffset = int(np.floor(min(xmin, 0)))
+        yoffset = int(np.floor(min(ymin, 0)))
+        H_trans = np.array([[1, 0, xoffset], [0, 1, yoffset], [0, 0, 1]])
+        col, row = max(int(np.ceil(xmax - xmin)), img.shape[0]), max(int(round(ymax - ymin)), img.shape[1])
 
-		return warpedImage
+        y_cor, x_cor = np.indices((row, col), dtype=np.float32)
+        idx1 = np.array([x_cor.ravel(), y_cor.ravel(), np.ones_like(x_cor).ravel()])
+        idx2 = H_trans.dot(np.linalg.inv(H).dot(idx1))
 
+    map_x, map_y = idx2[:-1] / idx2[-1]
+    map_x = map_x.reshape(row, col).astype(np.float32)
+    map_y = map_y.reshape(row, col).astype(np.float32)
 
-def wrapImage(img,H,shape):
-    h, w = shape
-    indy, indx = np.indices((h, w), dtype=np.float32)
-    lin_homg_ind = np.array([indx.ravel(), indy.ravel(), np.ones_like(indx).ravel()])
-
-    # warp the coordinates of src to those of true_dst
-    map_ind = H.dot(lin_homg_ind)
-    map_x, map_y = map_ind[:-1] / map_ind[-1]  # ensure homogeneity
-    map_x = map_x.reshape(h, w).astype(np.float32)
-    map_y = map_y.reshape(h, w).astype(np.float32)
     newImg = cv2.remap(img, map_x, map_y, cv2.INTER_LINEAR)
     return newImg
 
 def leftPerspective(a,b,H):
     xh = LA.inv(H)
     return righPerspective(a,b,xh)
-    # txyz = np.dot(xh, np.array([b.shape[1], b.shape[0], 1]))
-    # txyz = txyz / txyz[-1]
-    # dsize = (int(txyz[0]) + a.shape[1], int(txyz[1]) + a.shape[0])
-    # wrapedImage = wrapImage(a, xh, dsize)
-    # return wrapedImage
 
 def righPerspective(a,b,H):
-    txyz = np.dot(H, np.array([b.shape[1], b.shape[0], 1]))
-    txyz = txyz / txyz[-1]
-    dsize = (int(txyz[0]) + a.shape[1], int(txyz[1]) + a.shape[0])
-    wrapedImage = wrapImage(a, H, dsize)
+    wrapedImage = wrapImage(a, H, a.shape[:2],True)
     return wrapedImage
 
 def set3Name(left,right):
@@ -306,7 +285,7 @@ def match(a,b,direction):
         correspondenceList.append([x1, y1, x2, y2])
     corrs = np.matrix(correspondenceList)
     H, inliers = ransac(corrs, 0.6)
-    return H
+    return H, inliers
 
 # def stitch(imgs):
 #
@@ -325,85 +304,149 @@ def prepare_lists(images):
     return left_list,right_list
 
 
-def leftshift(left_list):
-    # self.left_list = reversed(self.left_list)
-    a = left_list[0].img
-    for imgTemp in left_list[1:]:
-        b = imgTemp.img
-        H = match(a, b, 'left')
-        xh = np.linalg.inv(H)
-        ds = np.dot(xh, np.array([a.shape[1], a.shape[0], 1]));
-        ds = ds / ds[-1]
-        f1 = np.dot(xh, np.array([0, 0, 1]))
-        f1 = f1 / f1[-1]
-        xh[0][-1] += abs(f1[0])
-        xh[1][-1] += abs(f1[1])
-        ds = np.dot(xh, np.array([a.shape[1], a.shape[0], 1]))
-        offsety = abs(int(f1[1]))
-        offsetx = abs(int(f1[0]))
-        dsize = (int(ds[0]) + offsetx, int(ds[1]) + offsety)
-        tmp = wrapImage(a, xh, dsize)
-        tmp = mix_and_match(tmp, b)
-        # tmp[offsety:b.shape[0] + offsety, offsetx:b.shape[1] + offsetx] = b
-        a = tmp
 
-    leftImage = tmp
-    return leftImage
+def findDimensions(image, homography):
+    base_p1 = np.ones(3, np.float32)
+    base_p2 = np.ones(3, np.float32)
+    base_p3 = np.ones(3, np.float32)
+    base_p4 = np.ones(3, np.float32)
+    (y, x) = image.shape[:2]
+    base_p1[:2] = [0, 0]
+    base_p2[:2] = [x, 0]
+    base_p3[:2] = [0, y]
+    base_p4[:2] = [x, y]
+    max_x = None
+    max_y = None
+    min_x = None
+    min_y = None
 
+    for pt in [base_p1, base_p2, base_p3, base_p4]:
 
-def rightshift(leftImage,right_list):
-    for temp in right_list:
-        each = temp.img
-        H = match(leftImage, each, 'left')
-        txyz = np.dot(H, np.array([each.shape[1], each.shape[0], 1]))
-        txyz = txyz / txyz[-1]
-        dsize = (int(txyz[0]) + leftImage.shape[1], int(txyz[1]) + leftImage.shape[0])
-        tmp = wrapImage(each, H, dsize)
-        tmp = mix_and_match(leftImage, tmp)
+        hp = np.matrix(homography, np.float32) * np.matrix(pt, np.float32).T
 
-    leftImage = tmp
-    return leftImage
-        # self.showImage('left')
+        hp_arr = np.array(hp, np.float32)
 
-def mix_and_match(leftImage, warpedImage):
-		i1y, i1x = leftImage.shape[:2]
-		i2y, i2x = warpedImage.shape[:2]
-		# t = time.time()
-		black_l = np.where(leftImage == np.array([0,0,0]))
-		black_wi = np.where(warpedImage == np.array([0,0,0]))
+        normal_pt = np.array([hp_arr[0] / hp_arr[2], hp_arr[1] / hp_arr[2]], np.float32)
 
+        if (max_x == None or normal_pt[0, 0] > max_x):
+            max_x = normal_pt[0, 0]
 
-		for i in range(0, i1x):
-			for j in range(0, i1y):
-				try:
-					if(np.array_equal(leftImage[j,i],np.array([0,0,0])) and  np.array_equal(warpedImage[j,i],np.array([0,0,0]))):
-						# print "BLACK"
-						# instead of just putting it with black,
-						# take average of all nearby values and avg it.
-						warpedImage[j,i] = [0, 0, 0]
-					else:
-						if(np.array_equal(warpedImage[j,i],[0,0,0])):
-							# print "PIXEL"
-							warpedImage[j,i] = leftImage[j,i]
-						else:
-							if not np.array_equal(leftImage[j,i], [0,0,0]):
-								bw, gw, rw = warpedImage[j,i]
-								bl,gl,rl = leftImage[j,i]
-								# b = (bl+bw)/2
-								# g = (gl+gw)/2
-								# r = (rl+rw)/2
-								warpedImage[j, i] = [bl,gl,rl]
-				except:
-					pass
-		return warpedImage
+        if (max_y == None or normal_pt[1, 0] > max_y):
+            max_y = normal_pt[1, 0]
+
+        if (min_x == None or normal_pt[0, 0] < min_x):
+            min_x = normal_pt[0, 0]
+
+        if (min_y == None or normal_pt[1, 0] < min_y):
+            min_y = normal_pt[1, 0]
+
+    min_x = min(0, min_x)
+    min_y = min(0, min_y)
+
+    return (min_x, min_y, max_x, max_y)
 
 def up_to_step_4(imgs):
     """Complete the pipeline and generate a panoramic image"""
     # ... your code here ...
-    left_shift, right_shift = prepare_lists(imgs)
-    leftImage = leftshift(left_shift)
-    finalImage = rightshift(leftImage,right_shift)
-    return finalImage
+
+    closestImage = None
+    base_img_rgb = imgs[0].img
+    base_img = cv2.GaussianBlur(cv2.cvtColor(base_img_rgb, cv2.COLOR_BGR2GRAY), (5, 5), 0)
+    for temp in imgs[1:]:
+        next_img_rgb = temp.img
+        next_img = cv2.GaussianBlur(cv2.cvtColor(next_img_rgb, cv2.COLOR_BGR2GRAY), (5, 5), 0)
+        H, status = match(base_img_rgb, next_img_rgb,'')
+        inlierRatio = float(np.sum(status)) / float(len(status))
+
+        if (closestImage == None or inlierRatio > closestImage['inliers']):
+            closestImage = {}
+            closestImage['h'] = H
+            closestImage['inliers'] = inlierRatio
+            closestImage['rgb'] = next_img_rgb
+            closestImage['img'] = next_img
+
+    H = closestImage['h']
+    H = H / H[2, 2]
+    H_inv = LA.inv(H)
+
+    if (closestImage['inliers'] > 0.1):  # and
+
+        (min_x, min_y, max_x, max_y) = findDimensions(closestImage['img'], H_inv)
+
+        # Adjust max_x and max_y by base img size
+        max_x = max(max_x, base_img.shape[1])
+        max_y = max(max_y, base_img.shape[0])
+
+        move_h = np.matrix(np.identity(3), np.float32)
+
+        if (min_x < 0):
+            move_h[0, 2] += -min_x
+            max_x += -min_x
+
+        if (min_y < 0):
+            move_h[1, 2] += -min_y
+            max_y += -min_y
+
+        mod_inv_h = move_h * H_inv
+
+        img_w = int(math.ceil(max_x))
+        img_h = int(math.ceil(max_y))
+
+
+        # Warp the new image given the homography from the old image
+        base_img_warp = wrapImage(base_img_rgb, move_h, (img_w, img_h))
+
+
+        next_img_warp = wrapImage(closestImage['rgb'], mod_inv_h, (img_w, img_h))
+
+        # Put the base image on an enlarged palette
+        enlarged_base_img = np.zeros((img_w, img_h, 3), np.uint8)
+
+
+        # Create a mask from the warped image for constructing masked composite
+        (ret, data_map) = cv2.threshold(cv2.cvtColor(next_img_warp, cv2.COLOR_BGR2GRAY),
+                                        0, 255, cv2.THRESH_BINARY)
+
+        enlarged_base_img = cv2.add(enlarged_base_img, base_img_warp,
+                                    mask=np.bitwise_not(data_map),
+                                    dtype=cv2.CV_8U)
+
+        # Now add the warped image
+        final_img = cv2.add(enlarged_base_img, next_img_warp,
+                            dtype=cv2.CV_8U)
+
+
+        # Crop off the black edges
+        final_gray = cv2.cvtColor(final_img, cv2.COLOR_BGR2GRAY)
+        _, thresh = cv2.threshold(final_gray, 1, 255, cv2.THRESH_BINARY)
+        im2, contours, hierarchy = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+
+
+        max_area = 0
+        best_rect = (0, 0, 0, 0)
+
+        for cnt in contours:
+            x, y, w, h = cv2.boundingRect(cnt)
+            # print "Bounding Rectangle: ", (x,y,w,h)
+
+            deltaHeight = h - y
+            deltaWidth = w - x
+
+            area = deltaHeight * deltaWidth
+
+            if (area > max_area and deltaHeight > 0 and deltaWidth > 0):
+                max_area = area
+                best_rect = (x, y, w, h)
+
+        if max_area > 0:
+
+            final_img_crop = final_img[best_rect[1]:best_rect[1] + best_rect[3],
+                             best_rect[0]:best_rect[0] + best_rect[2]]
+
+
+            final_img = final_img_crop
+
+    return final_img
 
 
 def save_step_4(img, output_path="./output/step4"):
@@ -441,12 +484,13 @@ if __name__ == "__main__":
     imgs = []
     filelist = os.listdir(args.input)
     filelist.sort()
-    for filename in filelist[:5]:
+    for filename in filelist[:12]:
         # img = cv2.imread(os.path.join(args.input, filename))
         img = MyImage(filename)
         temo = cv2.imread(os.path.join(args.input, filename))
         if temo is None:
             continue
+        # img.img = temo
         img.img = resize(temo, 0.3)
         print(filename)
         imgs.append(img)
